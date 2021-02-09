@@ -56,8 +56,25 @@ logger = logging.getLogger("fv3ser")
 gt.config.cache_settings["dir_name"] = os.environ["GT_CACHE_DIR_NAME"]
 
 
+def get_size():
+    return MPI.COMM_WORLD.Get_size() if MPI else 0
+
+
 def get_rank():
-    return MPI.COMM_WORLD.Get_rank() if MPI and MPI.COMM_WORLD.Get_size() > 1 else -1
+    return MPI.COMM_WORLD.Get_rank() if get_size() > 1 else -1
+
+
+def bcast(data):
+    return MPI.COMM_WORLD.bcast(data, root=0)
+
+
+def send(dest: int):
+    MPI.COMM_WORLD.send(1, dest=dest, tag=0)
+
+
+def recv(source: int) -> Any:
+    buff = bytearray(1 << 10)
+    return MPI.COMM_WORLD.recv(buff, source=source, tag=0)
 
 
 # TODO remove when using quantities throughout model

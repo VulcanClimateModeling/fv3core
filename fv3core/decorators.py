@@ -2,9 +2,7 @@ import collections
 import functools
 import hashlib
 import inspect
-import json
 import os
-import time
 import types
 from typing import BinaryIO, Callable, Sequence
 
@@ -172,40 +170,18 @@ def gtstencil(definition=None, **stencil_kwargs) -> Callable[..., None]:
                 origin = kwargs["origin"]
                 domain = kwargs["domain"]
                 axis_offsets = fv3core.utils.axis_offsets(spec.grid, origin, domain)
-
                 stencil_kwargs["externals"].update(axis_offsets)
 
                 # Claim this stencil for our rank...
                 func_id = func.__module__ + "." + func.__qualname__
-                rank = utils.get_rank()
-                # rank = max(0, rank)
                 log_file = "%s/compile.log" % gt.config.cache_settings["dir_name"]
-                rank_file = "%s/ranks.json" % gt.config.cache_settings["dir_name"]
+                rank = utils.get_rank()
+                root = 0
 
-                rank_data = {}
-                if rank >= 0:
-                    # Read rank file
-                    rp = open(rank_file) if os.path.exists(rank_file) else None
-                    rank_data = json.load(rp) if rp else {}
-                    if func_id in rank_data:
-                        other_rank = int(rank_data[func_id])
-                        rp.close()
-                        with open(log_file, "a") as log:
-                            log.write(
-                                f"R{rank}: wait for {other_rank} to compile '{func_id}'\n"
-                            )
-                        # Block...
-                        end_time = time.time() + 1000.0
-                        while time.time() < end_time and func_id in rank_data:
-                            with open(rank_file, "r") as rp:
-                                rank_data = json.load(rp)
-                            time.sleep(0.25)
-                    else:
-                        rank_data[func_id] = rank
-                        with open(rank_file, "w") as wp:
-                            json.dump(rank_data, wp)
-                        with open(log_file, "a") as log:
-                            log.write(f"R{rank}: compiling stencil '{func_id}'\n")
+                if rank > root:
+                    with open(log_file, "a") as log:
+                        log.write(f"R{rank}: wait for {root} to compile '{func_id}'\n")
+                    utils.recv(root)
 
                 # Generate stencil
                 build_info = {}
@@ -214,12 +190,11 @@ def gtstencil(definition=None, **stencil_kwargs) -> Callable[..., None]:
                 )
                 stencils[key] = FV3StencilObject(stencil, build_info)
 
-                if func_id in rank_data and rank_data[func_id] == rank:
-                    del rank_data[func_id]
-                    with open(rank_file, "w") as wp:
-                        json.dump(rank_data, wp)
+                if rank == root:
                     with open(log_file, "a") as log:
                         log.write(f"R{rank}: finished stencil '{func_id}'\n")
+                    for r in range(root + 1, utils.get_size()):
+                        utils.send(r)
 
             name = f"{func.__module__}.{func.__name__}"
             _maybe_save_report(
