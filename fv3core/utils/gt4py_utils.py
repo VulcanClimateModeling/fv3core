@@ -1,6 +1,7 @@
 import copy
 import logging
 import math
+import os
 from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -52,12 +53,11 @@ tracer_variables = [
 # Logger instance
 logger = logging.getLogger("fv3ser")
 
+gt.config.cache_settings["dir_name"] = os.environ["GT_CACHE_DIR_NAME"]
 
-# 1 indexing to 0 and halos: -2, -1, 0 --> 0, 1,2
-if MPI is not None and MPI.COMM_WORLD.Get_size() > 1:
-    gt.config.cache_settings["dir_name"] = ".gt_cache_{:0>6d}".format(
-        MPI.COMM_WORLD.Get_rank()
-    )
+
+def get_rank():
+    return MPI.COMM_WORLD.Get_rank() if MPI and MPI.COMM_WORLD.Get_size() > 1 else -1
 
 
 # TODO remove when using quantities throughout model
