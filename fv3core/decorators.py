@@ -208,7 +208,7 @@ class FV3StencilObject:
 
         if regenerate_stencil:
             # Claim this stencil for our rank...
-            func_id = func.__module__ + "." + func.__qualname__
+            func_id = self.func.__module__ + "." + self.func.__qualname__
             rank = utils.get_rank()
             root = 0
 
