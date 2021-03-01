@@ -7,9 +7,35 @@ import fv3core.stencils.basic_operations as basic
 import fv3core.utils.corners as corners
 from fv3core.decorators import gtstencil
 from fv3core.utils.typing import FloatField
+import numpy as np
+import fv3core.utils.gt4py_utils as utils
 
+@gtscript.function
+def remove_extra_term_south_corner(extra: FloatField, field: FloatField):
+    # from __externals__ import i_start, i_end,  j_start                                                          
+    # TODO: why does this not work?                                                                               
+    # with horizontal(region[i_start, j_start], region[i_end + 1, j_start]):                                      
+    #    field = field - extra[0, -1, 0]                                                                          
+    # return field                                                                     
+    return field - extra[0, -1, 0]
+@gtscript.function
+def remove_extra_term_north_corner(extra: FloatField, field: FloatField):
+    # TODO: why does this not work?                                                                               
+    # from __externals__ import i_start, i_end, j_end                                                             
+    # with horizontal(region[i_start, j_end + 1], region[i_end + 1, j_end + 1]):                                  
+    #     field = field + extra                                                                                   
+    # return field                                                                    
+    return field + extra
 
-@gtstencil()
+@gtscript.function
+def damp_tmp(q, da_min_c, d2_bg, dddmp):
+    tmpddd = dddmp * q
+    mintmp = 0.2 if 0.2 < tmpddd else tmpddd
+    maxd2 = d2_bg if d2_bg > mintmp else mintmp
+    damp = da_min_c * maxd2
+    return damp
+
+@gtscript.function
 def damping_nord0(
     u: FloatField,
     v: FloatField,
@@ -31,64 +57,34 @@ def damping_nord0(
     ptc: FloatField,
     vort: FloatField,
     delpc: FloatField,
-    ke: FloatField,
+    ke: FloatField, d2_bg: FloatField,
     da_min_c: float,
-    d2_bg: float,
     dt: float,
 ):
     from __externals__ import i_end, i_start, j_end, j_start, namelist
 
-    with computation(PARALLEL), interval(...):
-        ptc = (u - 0.5 * (va[0, -1, 0] + va) * cosa_v) * dyc * sina_v
-        with horizontal(region[:, j_start], region[:, j_end + 1]):
-            ptc = u * dyc * sin_sg4[0, -1, 0] if vc > 0 else u * dyc * sin_sg2
-        vort_copy = vort
-        vort = (v - 0.5 * (ua[-1, 0, 0] + ua) * cosa_u) * dxc * sina_u
-        with horizontal(region[i_start, :], region[i_end + 1, :]):
-            vort = vort_copy
-        with horizontal(region[i_start, :], region[i_end + 1, :]):
-            vort = v * dxc * sin_sg3[-1, 0, 0] if uc > 0 else v * dxc * sin_sg1
-        delpc = vort[0, -1, 0] - vort + ptc[-1, 0, 0] - ptc
-        with horizontal(region[i_start, j_start], region[i_end + 1, j_start]):
-            delpc = remove_extra_term_south_corner(vort, delpc)
-        with horizontal(region[i_start, j_end + 1], region[i_end + 1, j_end + 1]):
-            delpc = remove_extra_term_north_corner(vort, delpc)
-        delpc = rarea_c * delpc
-        delpcdt = delpc * dt
-        absdelpcdt = delpcdt if delpcdt >= 0 else -delpcdt
-        damp = damp_tmp(absdelpcdt, da_min_c, d2_bg, namelist.dddmp)
-        vort = damp * delpc
-        ke = ke + vort
-
-
-@gtscript.function
-def remove_extra_term_south_corner(extra: FloatField, field: FloatField):
-    # from __externals__ import i_start, i_end,  j_start
-    # TODO: why does this not work?
-    # with horizontal(region[i_start, j_start], region[i_end + 1, j_start]):
-    #    field = field - extra[0, -1, 0]
-    # return field
-    return field - extra[0, -1, 0]
-
-
-@gtscript.function
-def remove_extra_term_north_corner(extra: FloatField, field: FloatField):
-    # TODO: why does this not work?
-    # from __externals__ import i_start, i_end, j_end
-    # with horizontal(region[i_start, j_end + 1], region[i_end + 1, j_end + 1]):
-    #     field = field + extra
-    # return field
-    return field + extra
-
-
-@gtscript.function
-def damp_tmp(q, da_min_c, d2_bg, dddmp):
-    tmpddd = dddmp * q
-    mintmp = 0.2 if 0.2 < tmpddd else tmpddd
-    maxd2 = d2_bg if d2_bg > mintmp else mintmp
-    damp = da_min_c * maxd2
-    return damp
-
+    #with computation(PARALLEL), interval(...):
+    ptc = (u - 0.5 * (va[0, -1, 0] + va) * cosa_v) * dyc * sina_v
+    with horizontal(region[:, j_start], region[:, j_end + 1]):
+        ptc = u * dyc * sin_sg4[0, -1, 0] if vc > 0 else u * dyc * sin_sg2
+    vort_copy = vort
+    vort = (v - 0.5 * (ua[-1, 0, 0] + ua) * cosa_u) * dxc * sina_u
+    with horizontal(region[i_start, :], region[i_end + 1, :]):
+        vort = vort_copy
+    with horizontal(region[i_start, :], region[i_end + 1, :]):
+        vort = v * dxc * sin_sg3[-1, 0, 0] if uc > 0 else v * dxc * sin_sg1
+    delpc = vort[0, -1, 0] - vort + ptc[-1, 0, 0] - ptc
+    with horizontal(region[i_start, j_start], region[i_end + 1, j_start]):
+        delpc = remove_extra_term_south_corner(vort, delpc)
+    with horizontal(region[i_start, j_end + 1], region[i_end + 1, j_end + 1]):
+        delpc = remove_extra_term_north_corner(vort, delpc)
+    delpc = rarea_c * delpc
+    delpcdt = delpc * dt
+    absdelpcdt = delpcdt if delpcdt >= 0 else -delpcdt
+    damp = damp_tmp(absdelpcdt, da_min_c, d2_bg, namelist.dddmp)
+    vort = damp * delpc
+    ke = ke + vort
+    return  ptc, vort, delpc, ke
 
 @gtstencil()
 def damping_nord_highorder_stencil(
@@ -96,12 +92,13 @@ def damping_nord_highorder_stencil(
     ke: FloatField,
     delpc: FloatField,
     divg_d: FloatField,
+    nord_col: FloatField, d2_bg: FloatField,
     da_min_c: float,
-    d2_bg: float,
     dddmp: float,
-    dd8: float,
 ):
-    with computation(PARALLEL), interval(...):
+    from __externals__ import namelist
+    with computation(PARALLEL), interval(namelist.nord, None):
+        dd8 = (da_min_c * namelist.d4_bg) ** (nord_col + 1)
         damp = damp_tmp(vort, da_min_c, d2_bg, dddmp)
         vort = damp * delpc + dd8 * divg_d
         ke = ke + vort
@@ -257,27 +254,61 @@ def damping_nt0(
     with horizontal(region[i_start, j_end + 1], region[i_end + 1, j_end + 1]):
         divg_d = remove_extra_term_north_corner(uc, divg_d)
     # ASSUMED not grid.stretched_grid
-    with horizontal(region[local_is : local_ie + 2, local_js : local_je + 2]):
-        divg_d = basic.adjustmentfactor(rarea_c, divg_d)
+    #with horizontal(region[local_is : local_ie + 2, local_js : local_je + 2]):
+    divg_d = basic.adjustmentfactor(rarea_c, divg_d)
     return divg_d, uc, vc
 
 
 @gtstencil(externals={})
 def damping_nonzero_nord(
-    rarea_c: FloatField,
-    divg_u: FloatField,
-    divg_v: FloatField,
-    divg_d: FloatField,
-    uc: FloatField,
-    vc: FloatField,
-    delpc: FloatField,
+        cosa_u: FloatField, cosa_v: FloatField, sina_u: FloatField, sina_v: FloatField, dxc: FloatField,dyc: FloatField,
+        sin_sg1: FloatField, sin_sg2: FloatField, sin_sg3: FloatField, sin_sg4: FloatField, rarea_c: FloatField,
+        divg_u: FloatField,
+        divg_v: FloatField,
+        divg_d: FloatField,
+        u: FloatField, v: FloatField, ua: FloatField, va: FloatField, 
+        uc: FloatField,
+        vc: FloatField,
+        delpc: FloatField, ptc: FloatField, vort: FloatField, ke: FloatField, d2_bg: FloatField, da_min_c: float, dt: float
 ):
-    from __externals__ import local_ie, local_is, local_je, local_js
-
-    with computation(PARALLEL), interval(...):
+    from __externals__ import namelist, i_start, i_end, j_start, j_end
+    with computation(PARALLEL), interval(0, namelist.nord):
+        # TODO: using a function here results in vort being 0 at [:, js - 1, 0:3]
+        #ptc, vort, delpc, ke = damping_nord0(
+        #    u, v, ua, va, uc, vc,cosa_u,cosa_v, sina_u, sina_v, dxc,dyc,
+        #    sin_sg1, sin_sg2, sin_sg3, sin_sg4, rarea_c,
+        #    ptc,
+        #    vort,
+        #    delpc,
+        #    ke,d2_bg,
+        #    da_min_c,
+        #    dt)
+        
+        ptc = (u - 0.5 * (va[0, -1, 0] + va) * cosa_v) * dyc * sina_v
+        with horizontal(region[:, j_start], region[:, j_end + 1]):
+            ptc = u * dyc * sin_sg4[0, -1, 0] if vc > 0 else u * dyc * sin_sg2
+        vort_copy = vort
+        vort = (v - 0.5 * (ua[-1, 0, 0] + ua) * cosa_u) * dxc * sina_u
+        with horizontal(region[i_start, :], region[i_end + 1, :]):
+            vort = vort_copy
+        with horizontal(region[i_start, :], region[i_end + 1, :]):
+            vort = v * dxc * sin_sg3[-1, 0, 0] if uc > 0 else v * dxc * sin_sg1
+        delpc = vort[0, -1, 0] - vort + ptc[-1, 0, 0] - ptc
+        with horizontal(region[i_start, j_start], region[i_end + 1, j_start]):
+            delpc = remove_extra_term_south_corner(vort, delpc)
+        with horizontal(region[i_start, j_end + 1], region[i_end + 1, j_end + 1]):
+            delpc = remove_extra_term_north_corner(vort, delpc)
+        delpc = rarea_c * delpc
+        delpcdt = delpc * dt
+        absdelpcdt = delpcdt if delpcdt >= 0 else -delpcdt
+        damp = damp_tmp(absdelpcdt, da_min_c, d2_bg, namelist.dddmp)
+        vort = damp * delpc
+        ke = ke + vort
+    
+    with computation(PARALLEL), interval(namelist.nord, None):
         # TODO: needed for validation of DivergenceDamping, D_SW, but not DynCore
-        with horizontal(region[local_is : local_ie + 2, local_js : local_je + 2]):
-            delpc = divg_d
+        #with horizontal(region[local_is : local_ie + 2, local_js : local_je + 2]):
+        delpc = divg_d
         # TODO, can we call the same function 3 times, let gt4py do the extent analysis?
         # currently does not work because corner calculations need entire array,
         # and vc/uc need offsets
@@ -289,8 +320,8 @@ def damping_nonzero_nord(
 def compute(
     u,
     v,
-    va,
     ua,
+    va,
     uc,
     vc,
     ptc,
@@ -301,9 +332,9 @@ def compute(
     wk,
     d2_bg,
     dt,
-    nord,
-    kstart=0,
-    nk=None,
+    nord_col,
+    #kstart=0,
+    #nk=None,
 ):
     """Applies divergence damping to the momentum equations
 
@@ -328,66 +359,43 @@ def compute(
          nord: order of the damping scheme (in)
     """
     grid = spec.grid
-    if nk is None:
-        nk = grid.npz - kstart
-    if nord == 0:
-        damping_nord0(
-            u,
-            v,
-            ua,
-            va,
-            uc,
-            vc,
-            grid.cosa_u,
-            grid.cosa_v,
-            grid.sina_u,
-            grid.sina_v,
-            grid.dxc,
-            grid.dyc,
-            grid.sin_sg1,
-            grid.sin_sg2,
-            grid.sin_sg3,
-            grid.sin_sg4,
-            grid.rarea_c,
-            ptc,
-            vort,
-            delpc,
-            ke,
-            grid.da_min_c,
-            d2_bg,
-            dt,
-            origin=(grid.is_, grid.js, kstart),
-            domain=(grid.nic + 1, grid.njc + 1, nk),
-        )
-    else:
 
-        damping_nonzero_nord(
-            grid.rarea_c,
-            grid.divg_u,
-            grid.divg_v,
-            divg_d,
-            uc,
-            vc,
-            delpc,
-            origin=(grid.isd, grid.jsd, kstart),
-            domain=(grid.nid + 1, grid.njd + 1, nk),
-        )
+    damping_nonzero_nord(
+        grid.cosa_u,
+        grid.cosa_v,
+        grid.sina_u,
+        grid.sina_v,
+        grid.dxc,
+        grid.dyc,
+        grid.sin_sg1,
+        grid.sin_sg2,
+        grid.sin_sg3,
+        grid.sin_sg4,
+        grid.rarea_c,
+        grid.divg_u,
+        grid.divg_v,
+        divg_d, u, v, ua, va,
+        uc,
+        vc,
+        delpc, ptc, vort, ke, d2_bg, grid.da_min_c, dt,
+        origin=(grid.is_, grid.js, 0),
+        domain=(grid.nic + 1, grid.njc + 1, grid.npz),
+    )
+    # TODO when a2b ord4 no longer needs k_split_run, pull all of this into the stencil
+    data = {}
+    for varname in ["wk", "vort", "delpc", "dt"]:
+        data[varname] = locals()[varname]
+    col = {"nord": np.asarray([int(x) for x in nord_col[0, 0, :]])}
+    kstarts = utils.get_kstarts(col, grid.npz + 1)
+    utils.k_split_run(vorticity_calc, data, kstarts, col)
 
-        vorticity_calc(wk, vort, delpc, dt, nord, kstart, nk)
-        # TODO put this inside of stencil when grid variables an be externals
-        if grid.stretched_grid:
-            dd8 = grid.da_min * spec.namelist.d4_bg ** (nord + 1)
-        else:
-            dd8 = (grid.da_min_c * spec.namelist.d4_bg) ** (nord + 1)
-        damping_nord_highorder_stencil(
-            vort,
-            ke,
-            delpc,
-            divg_d,
-            grid.da_min_c,
-            d2_bg,
-            spec.namelist.dddmp,
-            dd8,
-            origin=(grid.is_, grid.js, kstart),
-            domain=(grid.nic + 1, grid.njc + 1, nk),
-        )
+    damping_nord_highorder_stencil(
+        vort,
+        ke,
+        delpc,
+        divg_d, nord_col,d2_bg,
+        grid.da_min_c,
+        spec.namelist.dddmp,
+        origin=(grid.is_, grid.js, 0),
+        domain=(grid.nic + 1, grid.njc + 1, grid.npz),
+    )
