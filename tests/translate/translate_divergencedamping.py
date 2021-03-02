@@ -32,6 +32,7 @@ class TranslateDivergenceDamping(TranslateFortranData2Py):
         }
         self.max_error = 3.0e-11
 
-    #def compute(self, inputs):
-    #    inputs["nord_col"] = np.asarray([int(x) for x in inputs["nord_col"][0, 0, :]])
-    #    return self.column_split_compute(inputs, {"nord": "nord_col", "d2_bg": "d2_bg"})
+    def compute_from_storage(self, inputs):
+        inputs["dd_test"] = True
+        self.compute_func(**inputs)
+        return inputs
