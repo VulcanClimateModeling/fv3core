@@ -34,7 +34,7 @@ def damp_tmp(q, da_min_c, d2_bg, dddmp):
     maxd2 = d2_bg if d2_bg > mintmp else mintmp
     damp = da_min_c * maxd2
     return damp
-
+# TODO: get the main stencil to call this, and work
 @gtscript.function
 def damping_nord0(
     u: FloatField,
@@ -123,7 +123,7 @@ def damping_nord_highorder_stencil_split(
     ke: FloatField,
     delpc: FloatField,
     divg_d: FloatField,
-    nord_col: FloatField, d2_bg: FloatField,
+    nord_col: int, d2_bg: float,
     da_min_c: float,
     dddmp: float,
 ):
@@ -133,6 +133,21 @@ def damping_nord_highorder_stencil_split(
         damp = damp_tmp(vort, da_min_c, d2_bg, dddmp)
         vort = damp * delpc + dd8 * divg_d
         ke = ke + vort
+# TODO delete this when k_split_run is removed from d_sw                                                          
+@gtstencil()
+def divergence_update(
+        rarea_c: FloatField,
+        divg_u: FloatField,
+        divg_v: FloatField,
+        divg_d: FloatField,
+        uc: FloatField,
+        vc: FloatField,
+        delpc: FloatField):
+    with computation(PARALLEL), interval(...):
+        delpc = divg_d 
+        divg_d, uc, vc = divergence_nt2(rarea_c, divg_u, divg_v, divg_d, uc, vc)
+        divg_d, uc, vc = divergence_nt1(rarea_c, divg_u, divg_v, divg_d, uc, vc)
+        divg_d, uc, vc = divergence_nt0(rarea_c, divg_u, divg_v, divg_d, uc, vc)
 
 @gtstencil()
 def damping_nord_highorder_stencil(
@@ -437,8 +452,12 @@ def compute(
             domain=grid.domain_shape_compute(add=(1, 1, 0)),
         )    
     else:
+        if nk is None:
+            nk =  grid.npz - kstart
+        d2_bgf = utils.make_storage_from_shape(divg_d.shape)
+        d2_bgf[:] = d2_bg
         if nord_col == 0:
-            damping_nord0(
+            damping_nord0_stencil(
                 u,
                 v,
                 ua,
@@ -460,30 +479,28 @@ def compute(
                 vort,
                 delpc,
                 ke,
-                grid.da_min_c,
-                d2_bg,
+                d2_bgf,grid.da_min_c,
                 dt,
                 origin=(grid.is_, grid.js, kstart),
                 domain=(grid.nic + 1, grid.njc + 1, nk),
             )
-        else:
-            damping_nonzero_nord(
-            grid.rarea_c,
-            grid.divg_u,
-            grid.divg_v,
-            divg_d,
-            uc,
-            vc,
-            delpc,
-            origin=(grid.is_, grid.js, kstart),
-            domain=(
-                grid.nic + 1,
-                grid.njc + 1,
-                nk,
-            ),  
+        else: # TODO: remove when d_sw does not rely on k_split_run
+            divergence_update(grid.rarea_c,
+                              grid.divg_u,
+                              grid.divg_v,
+                              divg_d,
+                              uc,
+                              vc,
+                              delpc,
+                              origin=(grid.is_, grid.js, kstart),
+                              domain=(
+                                  grid.nic + 1,
+                                  grid.njc + 1,
+                                  nk,
+                              ),  
             )
 
-            vorticity_calc(wk, vort, delpc, dt, nord, kstart, nk) 
+            vorticity_calc(wk, vort, delpc, dt, nord_col, kstart, nk) 
     
             damping_nord_highorder_stencil_split(
                 vort,
