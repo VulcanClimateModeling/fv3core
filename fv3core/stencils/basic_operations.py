@@ -53,10 +53,15 @@ def copy(q_in, origin=(0, 0, 0), domain=None):
     return q_out
 
 
+@gtscript.function
+def adjustmentfactor(adjustment: FloatField, q_out: FloatField):
+    return q_out * adjustment
+
+
 @gtstencil()
 def adjustmentfactor_stencil(adjustment: FloatFieldIJ, q_out: FloatField):
     with computation(PARALLEL), interval(...):
-        q_out[0, 0, 0] = q_out * adjustment
+        q_out[0, 0, 0] = adjustmentfactor(adjustment, q_out)
 
 
 @gtstencil()

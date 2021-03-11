@@ -1,85 +1,86 @@
 from typing import Optional
 
 import gt4py.gtscript as gtscript
-from gt4py.gtscript import PARALLEL, computation, interval
+from gt4py.gtscript import PARALLEL, computation, horizontal, interval, region
 
 import fv3core._config as spec
 import fv3core.stencils.a2b_ord4 as a2b_ord4
 import fv3core.stencils.basic_operations as basic
 import fv3core.utils.corners as corners
 from fv3core.decorators import gtstencil
-from fv3core.stencils.basic_operations import copy_stencil
 from fv3core.utils.typing import FloatField, FloatFieldIJ
 
 
 @gtstencil()
-def ptc_main(
+def damping_nord0(
     u: FloatField,
-    va: FloatField,
-    cosa_v: FloatFieldIJ,
-    sina_v: FloatFieldIJ,
-    dyc: FloatFieldIJ,
-    ptc: FloatField,
-):
-    with computation(PARALLEL), interval(...):
-        ptc = (u - 0.5 * (va[0, -1, 0] + va) * cosa_v) * dyc * sina_v
-
-
-@gtstencil()
-def ptc_y_edge(
-    u: FloatField,
-    vc: FloatField,
-    dyc: FloatFieldIJ,
-    sin_sg4: FloatFieldIJ,
-    sin_sg2: FloatFieldIJ,
-    ptc: FloatField,
-):
-    with computation(PARALLEL), interval(...):
-        ptc = u * dyc * sin_sg4[0, -1] if vc > 0 else u * dyc * sin_sg2
-
-
-@gtstencil()
-def vorticity_main(
     v: FloatField,
     ua: FloatField,
-    cosa_u: FloatFieldIJ,
-    sina_u: FloatFieldIJ,
-    dxc: FloatFieldIJ,
-    vort: FloatField,
-):
-    with computation(PARALLEL), interval(...):
-        vort = (v - 0.5 * (ua[-1, 0, 0] + ua) * cosa_u) * dxc * sina_u
-
-
-@gtstencil()
-def vorticity_x_edge(
-    v: FloatField,
+    va: FloatField,
     uc: FloatField,
+    vc: FloatField,
+    cosa_u: FloatFieldIJ,
+    cosa_v: FloatFieldIJ,
+    sina_u: FloatFieldIJ,
+    sina_v: FloatFieldIJ,
     dxc: FloatFieldIJ,
-    sin_sg3: FloatFieldIJ,
+    dyc: FloatFieldIJ,
     sin_sg1: FloatFieldIJ,
+    sin_sg2: FloatFieldIJ,
+    sin_sg3: FloatFieldIJ,
+    sin_sg4: FloatFieldIJ,
+    rarea_c: FloatFieldIJ,
+    ptc: FloatField,
     vort: FloatField,
+    delpc: FloatField,
+    ke: FloatField,
+    da_min_c: float,
+    d2_bg: float,
+    dt: float,
 ):
-    with computation(PARALLEL), interval(...):
-        vort = v * dxc * sin_sg3[-1, 0] if uc > 0 else v * dxc * sin_sg1
+    from __externals__ import i_end, i_start, j_end, j_start, namelist
 
-
-@gtstencil()
-def delpc_main(vort: FloatField, ptc: FloatField, delpc: FloatField):
     with computation(PARALLEL), interval(...):
+        ptc = (u - 0.5 * (va[0, -1, 0] + va) * cosa_v) * dyc * sina_v
+        with horizontal(region[:, j_start], region[:, j_end + 1]):
+            ptc = u * dyc * sin_sg4[0, -1] if vc > 0 else u * dyc * sin_sg2
+        vort_copy = vort
+        vort = (v - 0.5 * (ua[-1, 0, 0] + ua) * cosa_u) * dxc * sina_u
+        with horizontal(region[i_start, :], region[i_end + 1, :]):
+            vort = vort_copy
+        with horizontal(region[i_start, :], region[i_end + 1, :]):
+            vort = v * dxc * sin_sg3[-1, 0] if uc > 0 else v * dxc * sin_sg1
         delpc = vort[0, -1, 0] - vort + ptc[-1, 0, 0] - ptc
+        with horizontal(region[i_start, j_start], region[i_end + 1, j_start]):
+            delpc = remove_extra_term_south_corner(vort, delpc)
+        with horizontal(region[i_start, j_end + 1], region[i_end + 1, j_end + 1]):
+            delpc = remove_extra_term_north_corner(vort, delpc)
+        delpc = rarea_c * delpc
+        delpcdt = delpc * dt
+        absdelpcdt = delpcdt if delpcdt >= 0 else -delpcdt
+        damp = damp_tmp(absdelpcdt, da_min_c, d2_bg, namelist.dddmp)
+        vort = damp * delpc
+        ke = ke + vort
 
 
-@gtstencil()
-def corner_south_remove_extra_term(vort: FloatField, delpc: FloatField):
-    with computation(PARALLEL), interval(...):
-        delpc -= vort[0, -1, 0]
+@gtscript.function
+def remove_extra_term_south_corner(extra: FloatField, field: FloatField):
+    # from __externals__ import i_start, i_end,  j_start
+    # TODO: why does this not work?
+    # with horizontal(region[i_start, j_start], region[i_end + 1, j_start]):
+    #    field = field - extra[0, -1, 0]
+    # return field
+    return field - extra[0, -1, 0]
 
 
-@gtstencil()
-def corner_north_remove_extra_term(vort: FloatField, delpc: FloatField):
-    with computation(PARALLEL), interval(...):
-        delpc += vort
+@gtscript.function
+def remove_extra_term_north_corner(extra: FloatField, field: FloatField):
+    # TODO: why does this not work?
+    # from __externals__ import i_start, i_end, j_end
+    # with horizontal(region[i_start, j_end + 1], region[i_end + 1, j_end + 1]):
+    #     field = field + extra
+    # return field
+    return field + extra
 
 
 @gtscript.function
@@ -89,26 +90,6 @@ def damp_tmp(q, da_min_c, d2_bg, dddmp):
     maxd2 = d2_bg if d2_bg > mintmp else mintmp
     damp = da_min_c * maxd2
     return damp
-
-
-@gtstencil()
-def damping_nord0_stencil(
-    rarea_c: FloatFieldIJ,
-    delpc: FloatField,
-    vort: FloatField,
-    ke: FloatField,
-    da_min_c: float,
-    d2_bg: float,
-    dddmp: float,
-    dt: float,
-):
-    with computation(PARALLEL), interval(...):
-        delpc = rarea_c * delpc
-        delpcdt = delpc * dt
-        absdelpcdt = delpcdt if delpcdt >= 0 else -delpcdt
-        damp = damp_tmp(absdelpcdt, da_min_c, d2_bg, dddmp)
-        vort = damp * delpc
-        ke += vort
 
 
 @gtstencil()
@@ -128,22 +109,19 @@ def damping_nord_highorder_stencil(
         ke = ke + vort
 
 
-@gtstencil()
-def vc_from_divg(divg_d: FloatField, divg_u: FloatFieldIJ, vc: FloatField):
-    with computation(PARALLEL), interval(...):
-        vc[0, 0, 0] = (divg_d[1, 0, 0] - divg_d) * divg_u
+@gtscript.function
+def vc_from_divg(divg_d: FloatField, divg_u: FloatFieldIJ):
+    return (divg_d[1, 0, 0] - divg_d) * divg_u
 
 
-@gtstencil()
-def uc_from_divg(divg_d: FloatField, divg_v: FloatFieldIJ, uc: FloatField):
-    with computation(PARALLEL), interval(...):
-        uc[0, 0, 0] = (divg_d[0, 1, 0] - divg_d) * divg_v
+@gtscript.function
+def uc_from_divg(divg_d: FloatField, divg_v: FloatFieldIJ):
+    return (divg_d[0, 1, 0] - divg_d) * divg_v
 
 
-@gtstencil()
-def redo_divg_d(uc: FloatField, vc: FloatField, divg_d: FloatField):
-    with computation(PARALLEL), interval(...):
-        divg_d[0, 0, 0] = uc[0, -1, 0] - uc + vc[-1, 0, 0] - vc
+@gtscript.function
+def redo_divg_d(uc: FloatField, vc: FloatField):
+    return uc[0, -1, 0] - uc + vc[-1, 0, 0] - vc
 
 
 @gtstencil()
@@ -170,117 +148,199 @@ def vorticity_calc(wk, vort, delpc, dt, nord, kstart, nk):
                 raise Exception("Not implemented, smag_corner")
 
 
+@gtscript.function
+def update_divg_d(
+    rarea_c: FloatFieldIJ, divg_d: FloatField, uc: FloatField, vc: FloatField
+):
+    from __externals__ import i_end, i_start, j_end, j_start
+
+    divg_d = redo_divg_d(uc, vc)
+    with horizontal(region[i_start, j_start], region[i_end + 1, j_start]):
+        divg_d = remove_extra_term_south_corner(uc, divg_d)
+    with horizontal(region[i_start, j_end + 1], region[i_end + 1, j_end + 1]):
+        divg_d = remove_extra_term_north_corner(uc, divg_d)
+    # ASSUMED not grid.stretched_grid
+    divg_d = basic.adjustmentfactor(rarea_c, divg_d)
+    return divg_d
+
+
+@gtscript.function
+def divergence_subsequent(
+    rarea_c: FloatFieldIJ,
+    divg_u: FloatFieldIJ,
+    divg_v: FloatFieldIJ,
+    divg_d: FloatField,
+    uc: FloatField,
+    vc: FloatField,
+):
+    from __externals__ import local_ie, local_is, local_je, local_js
+
+    divg_d = corners.fill_corners_bgrid_x(divg_d)
+    with horizontal(region[local_is - 3 : local_ie + 4, local_js - 2 : local_je + 4]):
+        vc = vc_from_divg(divg_d, divg_u)
+    divg_d = corners.fill_corners_bgrid_y(divg_d)
+    with horizontal(region[local_is - 2 : local_ie + 4, local_js - 3 : local_je + 4]):
+        uc = (divg_d[0, 1, 0] - divg_d) * divg_v  # uc_from_divg(divg_d, divg_v)
+    vc, uc = corners.fill_corners_dgrid(vc, uc, -1.0)
+    divg_d = update_divg_d(rarea_c, divg_d, uc, vc)
+    return divg_d, uc, vc
+
+@gtscript.function
+def divergence_subsequent1(
+    rarea_c: FloatFieldIJ,
+    divg_u: FloatFieldIJ,
+    divg_v: FloatFieldIJ,
+    divg_d: FloatField,
+    uc: FloatField,
+    vc: FloatField,
+):
+    from __externals__ import local_ie, local_is, local_je, local_js
+    divg_d = corners.fill_corners_bgrid_x(divg_d)
+    with horizontal(region[local_is - 2 : local_ie + 3, local_js - 1 : local_je + 3]):
+        vc = vc_from_divg(divg_d, divg_u)
+    divg_d = corners.fill_corners_bgrid_y(divg_d)
+    with horizontal(region[local_is - 1 : local_ie + 3, local_js - 2 : local_je + 3]):
+        uc = (divg_d[0, 1, 0] - divg_d) * divg_v #uc_from_divg(divg_d, divg_v)
+    vc, uc = corners.fill_corners_dgrid(vc, uc, -1.0)
+    divg_d = update_divg_d(rarea_c, divg_d, uc, vc)
+    return divg_d, uc, vc
+
+
+@gtscript.function
+def divergence_at_nord(
+    rarea_c: FloatFieldIJ,
+    divg_u: FloatFieldIJ,
+    divg_v: FloatFieldIJ,
+    divg_d: FloatField,
+    uc: FloatField,
+    vc: FloatField,
+):
+    from __externals__ import local_ie, local_is, local_je, local_js
+    with horizontal(region[local_is - 1 : local_ie + 2, local_js : local_je + 2]):
+        vc = vc_from_divg(divg_d, divg_u)
+    with horizontal(region[local_is : local_ie + 2, local_js - 1 : local_je + 2]):
+        uc = uc_from_divg(divg_d, divg_v)
+    divg_d = update_divg_d(rarea_c, divg_d, uc, vc)
+    return divg_d, uc, vc
+
+
+@gtstencil()
+def damping_nonzero_nord(
+    rarea_c: FloatFieldIJ,
+    divg_u: FloatFieldIJ,
+    divg_v: FloatFieldIJ,
+    divg_d: FloatField,
+    uc: FloatField,
+    vc: FloatField,
+    delpc: FloatField,
+):
+
+    with computation(PARALLEL), interval(...):
+        delpc = divg_d
+        # TODO, can we call the same function 3 times, let gt4py do the extent analysis?
+        # currently does not work because corner calculations need entire array,
+        # and vc/uc need offsets
+        # Another TODO: once there is an idea of 'repetition', we need to loop
+        # namelist.nord times, not always 3 times, that is just what we have
+        # it set to. nord = 0, 1, or 2 are possible options
+        divg_d, uc, vc = divergence_subsequent(rarea_c, divg_u, divg_v, divg_d, uc, vc)
+        divg_d, uc, vc = divergence_subsequent1(rarea_c, divg_u, divg_v, divg_d, uc, vc)
+        divg_d, uc, vc = divergence_at_nord(rarea_c, divg_u, divg_v, divg_d, uc, vc)
+
+
 def compute(
     u: FloatField,
     v: FloatField,
+    ua: FloatField,
     va: FloatField,
+    uc: FloatField,
+    vc: FloatField,
     ptc: FloatField,
     vort: FloatField,
-    ua: FloatField,
     divg_d: FloatField,
-    vc: FloatField,
-    uc: FloatField,
     delpc: FloatField,
     ke: FloatField,
     wk: FloatField,
     d2_bg: float,
     dt: float,
-    nord: float,
+    nord: int,
     kstart: int = 0,
     nk: Optional[int] = None,
-) -> None:
+):
+    """Applies divergence damping to the momentum equations
+
+    The divergence damping term of the momentum equation is computed using
+    the double laplacian of the horizontal divergence oon a Lagrangian surface.
+    The vorticity, kinetic energy, divergence and C-grid winds are updated
+    accordingly.
+    Assumes this is not a nested grid.
+
+    Args:
+         u: x-velocity on the D-grid (in)
+         v: y-velocity on the D-grid (in)
+         ua: x-velocity on the A-grid (in)
+         va: y-velocity on the A-grid (in)
+         uc: x-velocity on the C-grid (inout)
+         vc: y-velocity on the C-grid (inout)
+         ptc: potential temperature (k) on the C-grid (inout)
+         vort: vorticity (inout)
+         ke: kinetic energy (inout)
+         wk: volume-mean relative vorticity(in)
+         d2_bg: coefficient for background second-order divergence damping. (in)
+         dt: dynamics timestep (seconds) (in)
+         nord: order of the damping scheme (in)
+    """
     grid = spec.grid
     if nk is None:
         nk = grid.npz - kstart
-    # Avoid running center-domain computation on tile edges, since they'll be
-    # overwritten.
-    is2 = grid.is_ + 1 if grid.west_edge else grid.is_
-    ie1 = grid.ie if grid.east_edge else grid.ie + 1
-    nord = int(nord)
     if nord == 0:
-        damping_zero_order(
-            u, v, va, ptc, vort, ua, vc, uc, delpc, ke, d2_bg, dt, is2, ie1, kstart, nk
-        )
-    else:
-        copy_stencil(
-            divg_d,
+        damping_nord0(
+            u,
+            v,
+            ua,
+            va,
+            uc,
+            vc,
+            grid.cosa_u,
+            grid.cosa_v,
+            grid.sina_u,
+            grid.sina_v,
+            grid.dxc,
+            grid.dyc,
+            grid.sin_sg1,
+            grid.sin_sg2,
+            grid.sin_sg3,
+            grid.sin_sg4,
+            grid.rarea_c,
+            ptc,
+            vort,
             delpc,
+            ke,
+            grid.da_min_c,
+            d2_bg,
+            dt,
             origin=(grid.is_, grid.js, kstart),
             domain=(grid.nic + 1, grid.njc + 1, nk),
         )
-        for n in range(1, nord + 1):
-            nt = nord - n
-            nint = grid.nic + 2 * nt + 1
-            njnt = grid.njc + 2 * nt + 1
-            js = grid.js - nt
-            is_ = grid.is_ - nt
-            fillc = (
-                (n != nord)
-                and spec.namelist.grid_type < 3
-                and not grid.nested
-                and (
-                    grid.sw_corner or grid.se_corner or grid.ne_corner or grid.nw_corner
-                )
-            )
-            if fillc:
-                corners.fill_corners_2d(divg_d, grid, "B", "x")
-            vc_from_divg(
-                divg_d,
-                grid.divg_u,
-                vc,
-                origin=(is_ - 1, js, kstart),
-                domain=(nint + 1, njnt, nk),
-            )
-            if fillc:
-                corners.fill_corners_2d(divg_d, grid, "B", "y")
-            uc_from_divg(
-                divg_d,
-                grid.divg_v,
-                uc,
-                origin=(is_, js - 1, kstart),
-                domain=(nint, njnt + 1, nk),
-            )
-            if fillc:
-                corners.fill_corners_dgrid(vc, uc, grid, True)
-
-            redo_divg_d(
-                uc, vc, divg_d, origin=(is_, js, kstart), domain=(nint, njnt, nk)
-            )
-            corner_domain = (1, 1, nk)
-            if grid.sw_corner:
-                corner_south_remove_extra_term(
-                    uc, divg_d, origin=(grid.is_, grid.js, kstart), domain=corner_domain
-                )
-            if grid.se_corner:
-                corner_south_remove_extra_term(
-                    uc,
-                    divg_d,
-                    origin=(grid.ie + 1, grid.js, kstart),
-                    domain=corner_domain,
-                )
-            if grid.ne_corner:
-                corner_north_remove_extra_term(
-                    uc,
-                    divg_d,
-                    origin=(grid.ie + 1, grid.je + 1, kstart),
-                    domain=corner_domain,
-                )
-            if grid.nw_corner:
-                corner_north_remove_extra_term(
-                    uc,
-                    divg_d,
-                    origin=(grid.is_, grid.je + 1, kstart),
-                    domain=corner_domain,
-                )
-            if not grid.stretched_grid:
-                basic.adjustmentfactor_stencil(
-                    grid.rarea_c,
-                    divg_d,
-                    origin=(is_, js, kstart),
-                    domain=(nint, njnt, nk),
-                )
+    else:
+        damping_nonzero_nord(
+            grid.rarea_c,
+            grid.divg_u,
+            grid.divg_v,
+            divg_d,
+            uc,
+            vc,
+            delpc,
+            origin=(grid.is_, grid.js, kstart),  # (grid.isd, grid.jsd, kstart),
+            domain=(
+                grid.nic + 1,
+                grid.njc + 1,
+                nk,
+            ),  # (grid.nid + 1, grid.njd + 1, nk),
+        )
 
         vorticity_calc(wk, vort, delpc, dt, nord, kstart, nk)
+        # TODO put this inside of stencil when grid variables an be externals
         if grid.stretched_grid:
             dd8 = grid.da_min * spec.namelist.d4_bg ** (nord + 1)
         else:
@@ -297,130 +357,3 @@ def compute(
             origin=(grid.is_, grid.js, kstart),
             domain=(grid.nic + 1, grid.njc + 1, nk),
         )
-
-    return vort, ke, delpc
-
-
-def damping_zero_order(
-    u: FloatField,
-    v: FloatField,
-    va: FloatField,
-    ptc: FloatField,
-    vort: FloatField,
-    ua: FloatField,
-    vc: FloatField,
-    uc: FloatField,
-    delpc: FloatField,
-    ke: FloatField,
-    d2_bg: float,
-    dt: float,
-    is2: int,
-    ie1: int,
-    kstart: int,
-    nk: int,
-) -> None:
-    grid = spec.grid
-    if not grid.nested:
-        # TODO: ptc and vort are equivalent, but x vs y, consolidate if possible.
-        ptc_main(
-            u,
-            va,
-            grid.cosa_v,
-            grid.sina_v,
-            grid.dyc,
-            ptc,
-            origin=(grid.is_ - 1, grid.js, kstart),
-            domain=(grid.nic + 2, grid.njc + 1, nk),
-        )
-        y_edge_domain = (grid.nic + 2, 1, nk)
-        if grid.south_edge:
-            ptc_y_edge(
-                u,
-                vc,
-                grid.dyc,
-                grid.sin_sg4,
-                grid.sin_sg2,
-                ptc,
-                origin=(grid.is_ - 1, grid.js, kstart),
-                domain=y_edge_domain,
-            )
-        if grid.north_edge:
-            ptc_y_edge(
-                u,
-                vc,
-                grid.dyc,
-                grid.sin_sg4,
-                grid.sin_sg2,
-                ptc,
-                origin=(grid.is_ - 1, grid.je + 1, kstart),
-                domain=y_edge_domain,
-            )
-
-        vorticity_main(
-            v,
-            ua,
-            grid.cosa_u,
-            grid.sina_u,
-            grid.dxc,
-            vort,
-            origin=(is2, grid.js - 1, kstart),
-            domain=(ie1 - is2 + 1, grid.njc + 2, nk),
-        )
-        x_edge_domain = (1, grid.njc + 2, nk)
-        if grid.west_edge:
-            vorticity_x_edge(
-                v,
-                uc,
-                grid.dxc,
-                grid.sin_sg3,
-                grid.sin_sg1,
-                vort,
-                origin=(grid.is_, grid.js - 1, kstart),
-                domain=x_edge_domain,
-            )
-        if grid.east_edge:
-            vorticity_x_edge(
-                v,
-                uc,
-                grid.dxc,
-                grid.sin_sg3,
-                grid.sin_sg1,
-                vort,
-                origin=(grid.ie + 1, grid.js - 1, kstart),
-                domain=x_edge_domain,
-            )
-    else:
-        raise Exception("nested not implemented")
-    compute_origin = (grid.is_, grid.js, kstart)
-    compute_domain = (grid.nic + 1, grid.njc + 1, nk)
-    delpc_main(vort, ptc, delpc, origin=compute_origin, domain=compute_domain)
-    corner_domain = (1, 1, nk)
-    if grid.sw_corner:
-        corner_south_remove_extra_term(
-            vort, delpc, origin=(grid.is_, grid.js, kstart), domain=corner_domain
-        )
-    if grid.se_corner:
-        corner_south_remove_extra_term(
-            vort, delpc, origin=(grid.ie + 1, grid.js, kstart), domain=corner_domain
-        )
-    if grid.ne_corner:
-        corner_north_remove_extra_term(
-            vort, delpc, origin=(grid.ie + 1, grid.je + 1, kstart), domain=corner_domain
-        )
-    if grid.nw_corner:
-        corner_north_remove_extra_term(
-            vort, delpc, origin=(grid.is_, grid.je + 1, kstart), domain=corner_domain
-        )
-
-    damping_nord0_stencil(
-        grid.rarea_c,
-        delpc,
-        vort,
-        ke,
-        grid.da_min_c,
-        d2_bg,
-        spec.namelist.dddmp,
-        dt,
-        origin=compute_origin,
-        domain=compute_domain,
-    )
